@@ -33,12 +33,14 @@ import openfl.filters.ShaderFilter;
 @:access(flixel.graphics.frames.FlxFrame)
 class FunkinCamera extends FlxCamera
 {
-  final grabbed:Array<BitmapData> = [];
+  var grabbed:Array<BitmapData> = [];
   final texturePool:Array<TextureBase> = [];
+  final disposeTexturesAfterDestroy:Bool = false;
 
   final bgTexture:TextureBase;
-  final bgBitmap:BitmapData;
   final bgFrame:FlxFrame;
+
+  var bgBitmap:BitmapData;
 
   final customBlendShader:RuntimeCustomBlendShader;
   final customBlendFilter:ShaderFilter;
@@ -52,7 +54,7 @@ class FunkinCamera extends FlxCamera
   final id:String = 'unknown';
 
   @:nullSafety(Off)
-  public function new(id:String = 'unknown', x:Int = 0, y:Int = 0, width:Int = 0, height:Int = 0, zoom:Float = 0)
+  public function new(id:String = 'unknown', x:Int = 0, y:Int = 0, width:Int = 0, height:Int = 0, zoom:Float = 0, ?disposeTexturesAfterDestroy:Bool = true)
   {
     super(x, y, width, height, zoom);
     this.id = id;
@@ -63,6 +65,7 @@ class FunkinCamera extends FlxCamera
     bgFrame.frame = new FlxRect();
     customBlendShader = new RuntimeCustomBlendShader();
     customBlendFilter = new ShaderFilter(customBlendShader);
+    this.disposeTexturesAfterDestroy = disposeTexturesAfterDestroy;
   }
 
   /**
@@ -192,22 +195,27 @@ class FunkinCamera extends FlxCamera
 
     if ( switch blend
       {
-        case DARKEN | HARDLIGHT | LIGHTEN | OVERLAY: true;
+        case DARKEN | HARDLIGHT #if !desktop | LIGHTEN #end | OVERLAY: true;
         case _: false;
       })
     {
-      // squash the screen
-      grabScreen(false);
-      // render without blend
-      super.drawPixels(frame, pixels, matrix, transform, null, smoothing, shader);
-      // get the isolated bitmap
-      final isolated = grabScreen(false, true);
-      // apply fullscreen blend
-      customBlendShader.blendSwag = blend;
-      @:nullSafety(Off) // I hope this doesn't cause issues
+      final background = grabScreen(false);
+
+      @:nullSafety(Off)
+      var isolated = getBitmapFromDrawCall(frame, pixels, matrix, transform, null, smoothing, shader);
+
+      @:nullSafety(Off)
       customBlendShader.sourceSwag = isolated;
+      @:nullSafety(Off)
+      customBlendShader.backgroundSwag = background;
+
+      customBlendShader.blendSwag = blend;
       customBlendShader.updateViewInfo(FlxG.width, FlxG.height, this);
-      applyFilter(customBlendFilter);
+
+      @:nullSafety(Off)
+      bgFrame.parent.bitmap = isolated;
+
+      super.drawPixels(bgFrame, isolated, new FlxMatrix(), canvas.transform.colorTransform, null, false, customBlendShader);
     }
     else
     {
@@ -215,14 +223,27 @@ class FunkinCamera extends FlxCamera
     }
   }
 
+  @:nullSafety(Off)
+  function getBitmapFromDrawCall(?frame:FlxFrame, ?pixels:BitmapData, ?matrix:FlxMatrix, ?transform:ColorTransform, ?blend:BlendMode, ?smoothing:Bool = false,
+      ?shader:FlxShader):BitmapData
+  {
+    var temporaryCamera:FunkinCamera = new FunkinCamera("TEMP", 0, 0, width, height, zoom, false);
+    temporaryCamera.drawPixels(frame, pixels, matrix, transform, null, smoothing, shader);
+
+    final bitmap:BitmapData = temporaryCamera.grabScreen(false, true).clone();
+    temporaryCamera.destroy();
+    return bitmap;
+  }
+
   override function destroy():Void
   {
     super.destroy();
-    disposeTextures();
+    if (disposeTexturesAfterDestroy) disposeTextures();
   }
 
   override function clearDrawStack():Void
   {
+    if (!disposeTexturesAfterDestroy) return;
     super.clearDrawStack();
     // also clear grabbed bitmaps
     for (bitmap in grabbed)
